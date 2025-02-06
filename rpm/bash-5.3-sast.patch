@@ -1,0 +1,186 @@
+diff --git a/arrayfunc.c b/arrayfunc.c
+--- a/arrayfunc.c
++++ b/arrayfunc.c
+@@ -208,7 +208,10 @@ bind_assoc_var_internal (entry, hash, key, value, flags)
+   newval = make_array_variable_value (entry, 0, key, value, flags);
+ 
+   if (entry->assign_func)
+-    (*entry->assign_func) (entry, newval, 0, key);
++    {
++      (*entry->assign_func) (entry, newval, 0, key);
++      FREE (key);
++    }
+   else
+     assoc_insert (hash, key, newval);
+ 
+@@ -985,6 +988,7 @@ quote_compound_array_word (w, type)
+   if (t != w+ind)
+    free (t);
+   strcpy (nword + i, value);
++  free (value);
+ 
+   return nword;
+ }
+diff --git a/builtins/evalfile.c b/builtins/evalfile.c
+--- a/builtins/evalfile.c
++++ b/builtins/evalfile.c
+@@ -79,7 +79,8 @@ _evalfile (filename, flags)
+ {
+   volatile int old_interactive;
+   procenv_t old_return_catch;
+-  int return_val, fd, result, pflags, i, nnull;
++  int return_val, fd, result, pflags, nnull;
++  size_t i;
+   ssize_t nr;			/* return value from read(2) */
+   char *string;
+   struct stat finfo;
+@@ -112,10 +113,10 @@ _evalfile (filename, flags)
+ 
+   if (fd < 0 || (fstat (fd, &finfo) == -1))
+     {
+-      i = errno;
++      result = errno;
+       if (fd >= 0)
+ 	close (fd);
+-      errno = i;
++      errno = result;
+ 
+ file_error_and_exit:
+       if (((flags & FEVAL_ENOENTOK) == 0) || errno != ENOENT)
+diff --git a/lib/readline/text.c b/lib/readline/text.c
+--- a/lib/readline/text.c
++++ b/lib/readline/text.c
+@@ -1409,8 +1409,7 @@ rl_change_case (int count, int op)
+ #if defined (HANDLE_MULTIBYTE)
+   WCHAR_T wc, nwc;
+   char mb[MB_LEN_MAX+1];
+-  int mlen;
+-  size_t m;
++  size_t m, mlen;
+   mbstate_t mps;
+ #endif
+ 
+@@ -1479,12 +1478,13 @@ rl_change_case (int count, int op)
+ 
+ 	      memset (&ts, 0, sizeof (mbstate_t));
+ 	      mlen = WCRTOMB (mb, nwc, &ts);
+-	      if (mlen < 0)
++
++	      if (MB_INVALIDCH (mlen))
+ 		{
+ 		  nwc = wc;
+ 		  memset (&ts, 0, sizeof (mbstate_t));
+ 		  mlen = WCRTOMB (mb, nwc, &ts);
+-		  if (mlen < 0)		/* should not happen */
++		  if (MB_INVALIDCH (mlen))		/* should not happen */
+ 		    strncpy (mb, rl_line_buffer + start, mlen = m);
+ 		}
+ 	      if (mlen > 0)
+diff --git a/lib/readline/util.c b/lib/readline/util.c
+--- a/lib/readline/util.c
++++ b/lib/readline/util.c
+@@ -556,7 +556,10 @@ _rl_audit_tty (char *string)
+   size = strlen (string) + 1;
+ 
+   if (NLMSG_SPACE (size) > MAX_AUDIT_MESSAGE_LENGTH)
+-    return;
++    {
++      close (fd);
++      return;
++    }
+ 
+   memset (&req, 0, sizeof(req));
+   req.nlh.nlmsg_len = NLMSG_SPACE (size);
+diff --git a/lib/sh/casemod.c b/lib/sh/casemod.c
+--- a/lib/sh/casemod.c
++++ b/lib/sh/casemod.c
+@@ -111,8 +111,7 @@ sh_modcase (string, pat, flags)
+ #if defined (HANDLE_MULTIBYTE)
+   wchar_t nwc;
+   char mb[MB_LEN_MAX+1];
+-  int mlen;
+-  size_t m;
++  size_t m, mlen;
+   mbstate_t state;
+ #endif
+ 
+@@ -254,8 +253,9 @@ singlebyte:
+ 	  else
+ 	    {
+ 	      mlen = wcrtomb (mb, nwc, &state);
+-	      if (mlen > 0)
+-		mb[mlen] = '\0';
++	      if (MB_INVALIDCH (mlen))
++		strncpy (mb, string + start, mlen = m);
++	      mb[mlen] = '\0';
+ 	      /* Don't assume the same width */
+ 	      strncpy (ret + retind, mb, mlen);
+ 	      retind += mlen;
+diff --git a/lib/sh/zwrite.c b/lib/sh/zwrite.c
+--- a/lib/sh/zwrite.c
++++ b/lib/sh/zwrite.c
+@@ -41,7 +41,9 @@ zwrite (fd, buf, nb)
+      char *buf;
+      size_t nb;
+ {
+-  int n, i, nt;
++  int nt;
++  size_t n;
++  ssize_t i;
+ 
+   for (n = nb, nt = 0;;)
+     {
+diff --git a/subst.c b/subst.c
+--- a/subst.c
++++ b/subst.c
+@@ -4287,12 +4287,17 @@ expand_string_dollar_quote (string, flags)
+ 		  continue;
+ 		}
+ 	      trans = locale_expand (t, 0, news-sindex, 0, &translen);
+-	      free (t);
+ 	      if (singlequote_translations &&
+ 		    ((news-sindex-1) != translen || STREQN (t, trans, translen) == 0))
+-		t = sh_single_quote (trans);
++		{
++		  free (t);
++		  t = sh_single_quote (trans);
++		}
+ 	      else
+-		t = sh_mkdoublequoted (trans, translen, 0);
++		{
++		  free (t);
++		  t = sh_mkdoublequoted (trans, translen, 0);
++		}
+ 	      sindex = news;
+ 	    }
+ #endif /* TRANSLATABLE_STRINGS */
+diff --git a/support/bashbug.sh.in b/support/bashbug.sh.in
+--- a/support/bashbug.sh.in
++++ b/support/bashbug.sh.in
+@@ -132,9 +132,9 @@ if [ -z "$DEFEDITOR" ] && [ -z "$EDITOR" ]; then
+ 		DEFEDITOR=emacs
+ 	elif [ -x /usr/bin/xemacs ]; then
+ 		DEFEDITOR=xemacs
+-	elif [ -x /usr/bin/vim; then
++	elif [ -x /usr/bin/vim ]; then
+ 		DEFEDITOR=vim
+-	elif [ -x /usr/bin/gvim; then
++	elif [ -x /usr/bin/gvim ]; then
+ 		DEFEDITOR=gvim
+ 	elif [ -x /usr/bin/nano ]; then
+ 		DEFEDITOR=nano
+diff --git a/support/man2html.c b/support/man2html.c
+--- a/support/man2html.c
++++ b/support/man2html.c
+@@ -809,7 +809,7 @@ out_html(char *c)
+ 	} else if (output_possible) {
+ 		while (*c) {
+ 			outbuffer[obp++] = *c;
+-			if (*c == '\n' || obp > HUGE_STR_MAX) {
++			if (*c == '\n' || obp >= HUGE_STR_MAX) {
+ 				outbuffer[obp] = '\0';
+ 				add_links(outbuffer);
+ 				obp = 0;
+-- 
+2.46.0
+
